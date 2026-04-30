@@ -450,7 +450,7 @@
           Вставить из буфера
         </button>
       </div>
-      <input type="file" id="file-input" accept="image/*">
+      <input type="file" id="file-input" accept="image/*,image/gif,video/mp4,video/quicktime,video/*">
     </section>
 
     <section>
@@ -508,6 +508,22 @@
       <input type="range" id="density" min="0.3" max="1.5" step="0.05" value="1.0">
     </section>
 
+    <section class="control">
+      <div class="control-header">
+        <span class="control-label">Мин. размер (свет)</span>
+        <span class="control-value" id="min-dot-value">0%</span>
+      </div>
+      <input type="range" id="min-dot" min="0" max="0.6" step="0.02" value="0.0">
+    </section>
+
+    <section class="control">
+      <div class="control-header">
+        <span class="control-label">Кривая размера</span>
+        <span class="control-value" id="dot-curve-value">1.00</span>
+      </div>
+      <input type="range" id="dot-curve" min="0.5" max="2.5" step="0.05" value="1.0">
+    </section>
+
     <section>
       <div class="section-label"><span class="section-num">[04]</span> ИНВЕРСИЯ</div>
       <div class="tone-toggle" id="invert-toggle">
@@ -530,6 +546,12 @@
             <svg width="8" height="8" viewBox="0 0 8 8"><path d="M4 1v5M2 4l2 2 2-2" stroke="#fff" stroke-width="0.8" fill="none" stroke-linecap="round"/></svg>
           </span>
           Скачать SVG
+        </button>
+        <button class="btn btn-secondary" id="btn-video" type="button" disabled>
+          <span class="btn-icon">
+            <svg width="8" height="8" viewBox="0 0 8 8"><path d="M2 2.2h2.6v3.6H2zM4.9 3.1l1.7-1v3.8l-1.7-1z" stroke="#fff" stroke-width="0.8" fill="none" stroke-linejoin="round"/></svg>
+          </span>
+          Скачать VIDEO
         </button>
       </div>
     </section>
@@ -601,6 +623,10 @@
 
   var state = {
     sourceImage: null,
+    sourceVideo: null,
+    sourceGif: null,
+    sourceKind: 'none', // none | image | video | gif
+    sourceUrl: null,
     tone: 'mono',
     shape: 'dot',
     gridSize: 6,
@@ -608,6 +634,10 @@
     contrast: 1.0,
     density: 1.0,
     invert: false,
+    minDot: 0.0,
+    dotCurve: 1.0,
+    previewFps: 12,
+    exporting: false,
     lastRender: null
   };
 
@@ -623,38 +653,115 @@
     return;
   }
 
+  // Init control labels
+  $('min-dot-value').textContent = Math.round(state.minDot * 100) + '%';
+  $('dot-curve-value').textContent = state.dotCurve.toFixed(2);
+
   function showCanvas() {
     emptyState.style.display = 'none';
     canvas.style.display = 'block';
     $('btn-png').disabled = false;
     $('btn-svg').disabled = false;
+    $('btn-video').disabled = (state.sourceKind !== 'video' && state.sourceKind !== 'gif');
   }
 
-  function loadImageFromFile(file) {
-    if (!file || !file.type || file.type.indexOf('image/') !== 0) {
-      console.warn('Not an image file');
+  var previewTimer = null;
+  var lastPreviewTs = 0;
+
+  function stopPreviewLoop() {
+    if (previewTimer) {
+      cancelAnimationFrame(previewTimer);
+      previewTimer = null;
+    }
+  }
+
+  function cleanupSource() {
+    stopPreviewLoop();
+    state.sourceImage = null;
+    state.sourceVideo = null;
+    state.sourceGif = null;
+    state.sourceKind = 'none';
+    state.lastRender = null;
+    $('btn-video').disabled = true;
+    if (state.sourceUrl) {
+      try { URL.revokeObjectURL(state.sourceUrl); } catch (e) {}
+      state.sourceUrl = null;
+    }
+  }
+
+  function loadMediaFromFile(file) {
+    if (!file) return;
+    if (!file.type) {
+      alert('Не удалось определить тип файла');
       return;
     }
-    $('source-name').textContent = file.name.toUpperCase().slice(0, 28);
 
-    var reader = new FileReader();
-    reader.onload = function(e) {
+    cleanupSource();
+    $('source-name').textContent = (file.name || 'SOURCE').toUpperCase().slice(0, 28);
+
+    var type = file.type;
+    var isGif = type === 'image/gif';
+    var isImage = type.indexOf('image/') === 0 && !isGif;
+    var isVideo = type.indexOf('video/') === 0;
+
+    if (!isImage && !isVideo && !isGif) {
+      alert('Неподдерживаемый формат. Поддержка: JPG/PNG/WEBP, GIF, MP4/MOV');
+      return;
+    }
+
+    var url = URL.createObjectURL(file);
+    state.sourceUrl = url;
+
+    if (isImage) {
       var img = new Image();
       img.onload = function() {
         state.sourceImage = img;
+        state.sourceKind = 'image';
+        $('btn-video').disabled = true;
         render();
       };
-      img.onerror = function() {
-        alert('Не удалось загрузить изображение');
+      img.onerror = function() { alert('Не удалось загрузить изображение'); };
+      img.src = url;
+      return;
+    }
+
+    if (isGif) {
+      var gif = new Image();
+      gif.onload = function() {
+        state.sourceGif = gif;
+        state.sourceKind = 'gif';
+        showCanvas();
+        startPreviewLoop();
       };
-      img.src = e.target.result;
+      gif.onerror = function() { alert('Не удалось загрузить GIF'); };
+      gif.src = url;
+      return;
+    }
+
+    // Video (mp4/mov/others supported by browser)
+    var video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.loop = true;
+    video.preload = 'auto';
+    video.onloadedmetadata = function() {
+      state.sourceVideo = video;
+      state.sourceKind = 'video';
+      showCanvas();
+      // Autoplay preview if allowed; if blocked, first click will start export anyway.
+      var p = video.play();
+      if (p && p.catch) p.catch(function() {});
+      startPreviewLoop();
     };
-    reader.onerror = function() { alert('Ошибка чтения файла'); };
-    reader.readAsDataURL(file);
+    video.onerror = function() {
+      alert('Не удалось загрузить видео. Возможно, формат не поддерживается этим браузером.');
+    };
+    video.src = url;
+    video.load();
   }
 
   fileInput.addEventListener('change', function(e) {
-    if (e.target.files && e.target.files[0]) loadImageFromFile(e.target.files[0]);
+    if (e.target.files && e.target.files[0]) loadMediaFromFile(e.target.files[0]);
   });
 
   $('btn-load').addEventListener('click', function() { fileInput.click(); });
@@ -672,7 +779,7 @@
           var type = item.types[j];
           if (type.indexOf('image/') === 0) {
             return item.getType(type).then(function(blob) {
-              loadImageFromFile(new File([blob], 'clipboard.png', { type: type }));
+              loadMediaFromFile(new File([blob], 'clipboard.png', { type: type }));
             });
           }
         }
@@ -699,7 +806,7 @@
   stage.addEventListener('drop', function(e) {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      loadImageFromFile(e.dataTransfer.files[0]);
+      loadMediaFromFile(e.dataTransfer.files[0]);
     }
   });
 
@@ -711,7 +818,7 @@
         if (item.type.indexOf('image/') === 0) {
           var blob = item.getAsFile();
           if (blob) {
-            loadImageFromFile(blob);
+            loadMediaFromFile(blob);
             return;
           }
         }
@@ -741,6 +848,18 @@
   $('density').addEventListener('input', function(e) {
     state.density = parseFloat(e.target.value);
     $('density-value').textContent = Math.round(state.density * 100) + '%';
+    debouncedRender();
+  });
+
+  $('min-dot').addEventListener('input', function(e) {
+    state.minDot = parseFloat(e.target.value);
+    $('min-dot-value').textContent = Math.round(state.minDot * 100) + '%';
+    debouncedRender();
+  });
+
+  $('dot-curve').addEventListener('input', function(e) {
+    state.dotCurve = parseFloat(e.target.value);
+    $('dot-curve-value').textContent = state.dotCurve.toFixed(2);
     debouncedRender();
   });
 
@@ -784,7 +903,7 @@
   }
 
   function render() {
-    if (!state.sourceImage) return;
+    if (!state.sourceImage && !state.sourceVideo && !state.sourceGif) return;
     showCanvas();
     loading.classList.add('active');
 
@@ -799,19 +918,44 @@
     }, 20);
   }
 
+  function startPreviewLoop() {
+    stopPreviewLoop();
+    lastPreviewTs = 0;
+
+    function tick(ts) {
+      if (state.sourceKind !== 'video' && state.sourceKind !== 'gif') return;
+      var interval = 1000 / Math.max(1, state.previewFps || 12);
+      if (!lastPreviewTs || (ts - lastPreviewTs) >= interval) {
+        lastPreviewTs = ts;
+        // Avoid stacking overlays; just render directly for preview frames.
+        try { doRender(); } catch (e) {}
+      }
+      previewTimer = requestAnimationFrame(tick);
+    }
+
+    previewTimer = requestAnimationFrame(tick);
+  }
+
   function doRender() {
     var img = state.sourceImage;
+    var sourceEl = img;
+    if (state.sourceVideo) sourceEl = state.sourceVideo;
+    if (state.sourceGif) sourceEl = state.sourceGif;
+    if (!sourceEl) return;
 
     // Fixed-target output: fit into 1000x800 box
     var MAX_W = 1000;
     var MAX_H = 800;
-    var aspect = img.width / img.height;
+    var srcW = img ? img.width : (sourceEl.videoWidth || sourceEl.naturalWidth || sourceEl.width);
+    var srcH = img ? img.height : (sourceEl.videoHeight || sourceEl.naturalHeight || sourceEl.height);
+    if (!srcW || !srcH) throw new Error('Источник ещё не готов (нет размеров)');
+    var aspect = srcW / srcH;
     var outW, outH;
     if (aspect >= MAX_W / MAX_H) {
-      outW = Math.min(MAX_W, img.width);
+      outW = Math.min(MAX_W, srcW);
       outH = outW / aspect;
     } else {
-      outH = Math.min(MAX_H, img.height);
+      outH = Math.min(MAX_H, srcH);
       outW = outH * aspect;
     }
     outW = Math.round(outW);
@@ -829,7 +973,7 @@
     sample.width = outW;
     sample.height = outH;
     var sctx = sample.getContext('2d');
-    sctx.drawImage(img, 0, 0, outW, outH);
+    sctx.drawImage(sourceEl, 0, 0, outW, outH);
     var data;
     try {
       data = sctx.getImageData(0, 0, outW, outH).data;
@@ -845,6 +989,8 @@
     var elScale = state.elementSize;
     var contrast = state.contrast;
     var density = state.density;
+    var minDot = state.minDot;
+    var curve = state.dotCurve;
     var maxR = grid * 0.6 * elScale;
     var sampleStep = Math.max(1, Math.floor(grid / 3));
 
@@ -876,9 +1022,13 @@
         if (darkness < 0) darkness = 0;
         if (darkness > 1) darkness = 1;
 
-        if (darkness < 0.04) continue;
-
-        var r = darkness * maxR;
+        // Size mapping: allow visible tiny dots in highlights via minDot,
+        // and control growth with curve (gamma-like).
+        var sizeT = minDot + darkness * (1 - minDot);
+        if (sizeT < 0) sizeT = 0;
+        if (sizeT > 1) sizeT = 1;
+        var r = Math.pow(sizeT, curve) * maxR;
+        if (r < 0.25) continue;
         var cx = x + grid / 2;
         var cy = y + grid / 2;
 
@@ -987,6 +1137,114 @@
       alert('Ошибка экспорта SVG: ' + err.message);
     }
   });
+
+  function pickRecorderMimeType() {
+    var candidates = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
+    if (!window.MediaRecorder) return null;
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        if (MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
+      } catch (e) {}
+    }
+    return '';
+  }
+
+  function downloadBlob(blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function exportVideo() {
+    if (state.exporting) return;
+    if (!state.sourceVideo && !state.sourceGif) return;
+    if (!window.MediaRecorder) {
+      alert('Экспорт видео не поддерживается этим браузером (нет MediaRecorder).');
+      return;
+    }
+
+    var mimeType = pickRecorderMimeType();
+    if (mimeType === null) {
+      alert('Экспорт видео недоступен.');
+      return;
+    }
+
+    var fps = Math.max(1, state.previewFps || 12);
+    var stream = canvas.captureStream(fps);
+    var chunks = [];
+    var recorder;
+    try {
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : undefined);
+    } catch (e) {
+      // fallback without specifying mimeType
+      try { recorder = new MediaRecorder(stream); } catch (err) {
+        alert('Не удалось начать запись видео: ' + err.message);
+        return;
+      }
+    }
+
+    state.exporting = true;
+    loading.classList.add('active');
+
+    recorder.ondataavailable = function(e) {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+
+    recorder.onerror = function() {
+      state.exporting = false;
+      loading.classList.remove('active');
+      alert('Ошибка записи видео');
+    };
+
+    recorder.onstop = function() {
+      state.exporting = false;
+      loading.classList.remove('active');
+      var blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+      var ext = (blob.type && blob.type.indexOf('mp4') !== -1) ? 'mp4' : 'webm';
+      downloadBlob(blob, 'mws-ai-dotrender-' + state.tone + (state.invert ? '-inv' : '') + '-' + Date.now() + '.' + ext);
+    };
+
+    recorder.start(200);
+
+    if (state.sourceVideo) {
+      var v = state.sourceVideo;
+      try {
+        v.currentTime = 0;
+      } catch (e) {}
+      var playPromise = v.play();
+      if (playPromise && playPromise.catch) playPromise.catch(function() {});
+      var stopOnEnd = function() {
+        v.removeEventListener('ended', stopOnEnd);
+        try { recorder.stop(); } catch (e) {}
+      };
+      // If video is looping for preview, temporarily disable loop for export.
+      var prevLoop = v.loop;
+      v.loop = false;
+      v.addEventListener('ended', function() {
+        v.loop = prevLoop;
+        stopOnEnd();
+      }, { once: true });
+      return;
+    }
+
+    // GIF export: record a short clip (best-effort) because we don't know true duration.
+    setTimeout(function() {
+      try { recorder.stop(); } catch (e) {}
+    }, 4000);
+  }
+
+  $('btn-video').addEventListener('click', exportVideo);
 
   console.log('MWS AI Dot Render — initialized');
 })();
