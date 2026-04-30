@@ -509,7 +509,15 @@
     </section>
 
     <section>
-      <div class="section-label"><span class="section-num">[04]</span> ЭКСПОРТ</div>
+      <div class="section-label"><span class="section-num">[04]</span> ИНВЕРСИЯ</div>
+      <div class="tone-toggle" id="invert-toggle">
+        <button class="tone-btn active" data-invert="0" type="button">Оригинал</button>
+        <button class="tone-btn" data-invert="1" type="button">Инверсия</button>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-label"><span class="section-num">[05]</span> ЭКСПОРТ</div>
       <div class="btn-group">
         <button class="btn btn-secondary" id="btn-png" type="button" disabled>
           <span class="btn-icon">
@@ -599,6 +607,7 @@
     elementSize: 1.0,
     contrast: 1.0,
     density: 1.0,
+    invert: false,
     lastRender: null
   };
 
@@ -750,9 +759,18 @@
     }
   }
 
-  bindToggle('.tone-btn', function(btn) {
+  function updateOutputLabel() {
+    $('output-label').textContent = 'OUTPUT / DOT.' + state.tone.toUpperCase() + (state.invert ? ' / INV' : '');
+  }
+
+  bindToggle('.tone-btn[data-tone]', function(btn) {
     state.tone = btn.dataset.tone;
-    $('output-label').textContent = 'OUTPUT / DOT.' + state.tone.toUpperCase();
+    updateOutputLabel();
+  });
+
+  bindToggle('.tone-btn[data-invert]', function(btn) {
+    state.invert = btn.dataset.invert === '1';
+    updateOutputLabel();
   });
 
   bindToggle('.shape-btn', function(btn) {
@@ -848,6 +866,7 @@
           }
         }
         var avg = count > 0 ? lumSum / count : 1;
+        if (state.invert) avg = 1 - avg;
 
         var v = (avg - 0.5) * contrast + 0.5;
         if (v < 0) v = 0;
