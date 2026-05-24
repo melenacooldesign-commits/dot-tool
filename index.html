@@ -619,6 +619,8 @@
 (function() {
   'use strict';
 
+  var SQRT3 = Math.sqrt(3);
+
   var state = {
     sourceImage: null,
     sourceVideo: null,
@@ -989,7 +991,8 @@
     var density = state.density;
     var minDot = state.minDot;
     var curve = state.dotCurve;
-    var maxR = grid * 0.6 * elScale;
+    var isHex = state.shape === 'hex';
+    var maxR = isHex ? grid * elScale : grid * 0.6 * elScale;
     var sampleStep = Math.max(1, Math.floor(grid / 3));
 
     var pointCount = 0;
@@ -999,8 +1002,7 @@
     ctx.lineJoin = 'round';
 
     function drawHex(cx, cy, r) {
-      // Pointy-top hexagon like the provided SVG path.
-      // r here is the "radius" from center to a vertex.
+      // Pointy-top hexagon; r = circumradius (center to vertex).
       ctx.beginPath();
       for (var k = 0; k < 6; k++) {
         var a = (-90 + k * 60) * Math.PI / 180;
@@ -1013,62 +1015,92 @@
       ctx.fill();
     }
 
-    for (var y = 0; y < outH; y += grid) {
-      for (var x = 0; x < outW; x += grid) {
-        var lumSum = 0, count = 0;
-        for (var sy = 0; sy < grid && y + sy < outH; sy += sampleStep) {
-          for (var sx = 0; sx < grid && x + sx < outW; sx += sampleStep) {
-            var idx = ((y + sy) * outW + (x + sx)) * 4;
-            var l = (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]) / 255;
-            lumSum += l;
-            count++;
-          }
+    function renderAtCell(cx, cy, x0, y0, sw, sh, step) {
+      var lumSum = 0, count = 0;
+      var xEnd = Math.min(outW, x0 + sw);
+      var yEnd = Math.min(outH, y0 + sh);
+      for (var sy = y0; sy < yEnd; sy += step) {
+        for (var sx = x0; sx < xEnd; sx += step) {
+          var idx = (sy * outW + sx) * 4;
+          var l = (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]) / 255;
+          lumSum += l;
+          count++;
         }
-        var avg = count > 0 ? lumSum / count : 1;
-        if (state.invert) avg = 1 - avg;
+      }
+      var avg = count > 0 ? lumSum / count : 1;
+      if (state.invert) avg = 1 - avg;
 
-        var v = (avg - 0.5) * contrast + 0.5;
-        if (v < 0) v = 0;
-        if (v > 1) v = 1;
+      var v = (avg - 0.5) * contrast + 0.5;
+      if (v < 0) v = 0;
+      if (v > 1) v = 1;
 
-        var darkness = (1 - v) * density;
-        if (darkness < 0) darkness = 0;
-        if (darkness > 1) darkness = 1;
+      var darkness = (1 - v) * density;
+      if (darkness < 0) darkness = 0;
+      if (darkness > 1) darkness = 1;
 
-        // Size mapping: allow visible tiny dots in highlights via minDot,
-        // and control growth with curve (gamma-like).
-        var sizeT = minDot + darkness * (1 - minDot);
-        if (sizeT < 0) sizeT = 0;
-        if (sizeT > 1) sizeT = 1;
-        var r = Math.pow(sizeT, curve) * maxR;
-        if (r < 0.25) continue;
-        var cx = x + grid / 2;
-        var cy = y + grid / 2;
+      var sizeT = minDot + darkness * (1 - minDot);
+      if (sizeT < 0) sizeT = 0;
+      if (sizeT > 1) sizeT = 1;
+      var r = Math.pow(sizeT, curve) * maxR;
+      if (r < 0.25) return;
 
-        var color;
-        if (state.tone === 'mono') {
-          color = '#1a1a1a';
-        } else {
-          color = avg < 0.4 ? '#5E3FBF' : '#7B5CD9';
+      var color;
+      if (state.tone === 'mono') {
+        color = '#1a1a1a';
+      } else {
+        color = avg < 0.4 ? '#5E3FBF' : '#7B5CD9';
+      }
+
+      if (state.shape === 'dot') {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (state.shape === 'square') {
+        ctx.fillStyle = color;
+        var s = r * 1.7;
+        ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
+      } else if (state.shape === 'hex') {
+        ctx.fillStyle = color;
+        drawHex(cx, cy, r);
+      }
+
+      pointCount++;
+      instructions.push({ cx: cx, cy: cy, r: r, color: color });
+    }
+
+    if (isHex) {
+      var hexSize = grid;
+      var horiz = SQRT3 * hexSize;
+      var vert = 1.5 * hexSize;
+      var sampleHalfW = hexSize * SQRT3 / 2;
+      var sampleHalfH = hexSize;
+      var hexStep = Math.max(1, Math.floor(hexSize / 3));
+      var qMin = Math.floor(-2 - outW / horiz);
+      var qMax = Math.ceil(outW / horiz + 2);
+      var rMin = Math.floor(-2 - outH / vert);
+      var rMax = Math.ceil(outH / vert + 3);
+
+      for (var q = qMin; q <= qMax; q++) {
+        for (var ri = rMin; ri <= rMax; ri++) {
+          var cx = hexSize * SQRT3 * (q + ri / 2);
+          var cy = hexSize * 1.5 * ri;
+          if (cx + sampleHalfW < 0 || cy + sampleHalfH < 0 || cx - sampleHalfW > outW || cy - sampleHalfH > outH) continue;
+          renderAtCell(
+            cx, cy,
+            Math.max(0, Math.floor(cx - sampleHalfW)),
+            Math.max(0, Math.floor(cy - sampleHalfH)),
+            sampleHalfW * 2,
+            sampleHalfH * 2,
+            hexStep
+          );
         }
-
-        if (state.shape === 'dot') {
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.fill();
-        } else if (state.shape === 'square') {
-          ctx.fillStyle = color;
-          var s = r * 1.7;
-          ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
-        } else if (state.shape === 'hex') {
-          ctx.fillStyle = color;
-          // Make hex slightly larger to match dot/square perceived weight.
-          drawHex(cx, cy, r * 1.15);
+      }
+    } else {
+      for (var y = 0; y < outH; y += grid) {
+        for (var x = 0; x < outW; x += grid) {
+          renderAtCell(x + grid / 2, y + grid / 2, x, y, grid, grid, sampleStep);
         }
-
-        pointCount++;
-        instructions.push({ cx: cx, cy: cy, r: r, color: color });
       }
     }
 
@@ -1131,7 +1163,7 @@
           var s = p.r * 1.7;
           parts.push('<rect x="' + (p.cx - s / 2).toFixed(2) + '" y="' + (p.cy - s / 2).toFixed(2) + '" width="' + s.toFixed(2) + '" height="' + s.toFixed(2) + '" fill="' + p.color + '"/>');
         } else if (r.shape === 'hex') {
-          parts.push('<polygon points="' + hexPoints(p.cx, p.cy, p.r * 1.15) + '" fill="' + p.color + '"/>');
+          parts.push('<polygon points="' + hexPoints(p.cx, p.cy, p.r) + '" fill="' + p.color + '"/>');
         }
       }
       parts.push('</svg>');
